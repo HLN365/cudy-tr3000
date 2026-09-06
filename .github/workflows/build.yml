@@ -51,8 +51,19 @@ jobs:
             gcc-multilib g++-multilib gettext git \
             libncurses5-dev libssl-dev python3 python3-distutils \
             rsync unzip zlib1g-dev libelf-dev file wget \
-            ccache time lib32gcc-s1 lib32stdc++6 lib32z1 \
+            time lib32gcc-s1 lib32stdc++6 lib32z1 \
             xz-utils device-tree-compiler curl ca-certificates
+          # OpenWrt build system auto-detects ccache and tries to use it.
+          # We don't want ccache here (runner doesn't support it), so we
+          # uninstall the binary so the build system falls back to plain gcc.
+          sudo apt-get remove -y --purge ccache 2>/dev/null || true
+          sudo apt-get autoremove -y 2>/dev/null || true
+          # Belt and suspenders: hide any ccache left over in /usr/local/bin too.
+          sudo mv /usr/bin/ccache /usr/bin/ccache.disabled 2>/dev/null || true
+          sudo mv /usr/local/bin/ccache /usr/local/bin/ccache.disabled 2>/dev/null || true
+          echo "ccache after disable:"
+          which ccache || echo "(none — good)"
+          hash -r
 
       - name: Clone source
         run: |
@@ -119,10 +130,9 @@ jobs:
       - name: Build
         working-directory: openwrt
         run: |
-          # 不开 ccache:GitHub runner 每次都是新机器,ccache 缓存几乎不命中,
-          # 且上游 Makefile 写死 /workdir/.ccache 路径导致 permission denied。
-          # 用 V=1 显示完整命令,tee 保留完整日志
           unset CCACHE_DIR
+          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          hash -r
           make -j"$(nproc)" V=1 2>&1 | tee build.log
           EXIT=${PIPESTATUS[0]}
           if [ "$EXIT" -ne 0 ]; then
