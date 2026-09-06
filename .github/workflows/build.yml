@@ -16,7 +16,7 @@ env:
   CONFIG_FILE: config/tr3000.config
   DIY_P1_SH: scripts/diy-part1.sh
   DIY_P2_SH: scripts/diy-part2.sh
-  CCACHE_DIR: /tmp/ccache
+  CCACHE_DIR: /tmp/ccache-unused
   TZ: Asia/Shanghai
   DEBIAN_FRONTEND: noninteractive
 
@@ -62,14 +62,10 @@ jobs:
           echo "==== tools/zstd source version ===="
           git -C openwrt log -1 --oneline -- tools/zstd 2>/dev/null || true
 
-      - name: Setup ccache
+      - name: Setup ccache (disabled)
         run: |
-          # CCACHE_DIR 是 job-level env 里的路径,提前创建好
-          mkdir -p "$CCACHE_DIR"
-          chmod 777 "$CCACHE_DIR"
-          ccache --max-size 2G
-          ccache --set-config compression=true
-          ccache -z  # 清零统计,避免旧缓存报错
+          echo "ccache disabled — GitHub runner has hardcoded /workdir/.ccache in OpenWrt Makefile"
+          echo "Skip ccache to avoid permission denied errors"
 
       - name: Cache dl/ (downloaded package sources)
         uses: actions/cache@v4
@@ -120,15 +116,14 @@ jobs:
         working-directory: openwrt
         run: make -j"$(nproc)" download
 
-      - name: Build (ccache on)
+      - name: Build
         working-directory: openwrt
-        env:
-          CCACHE_DIR: ${{ env.CCACHE_DIR }}
         run: |
-          # V=1 显示完整命令;tee 保留完整日志以便失败时下载
-          make -j"$(nproc)" V=1 \
-               CC="ccache gcc" CXX="ccache g++" \
-               2>&1 | tee build.log
+          # 不开 ccache:GitHub runner 每次都是新机器,ccache 缓存几乎不命中,
+          # 且上游 Makefile 写死 /workdir/.ccache 路径导致 permission denied。
+          # 用 V=1 显示完整命令,tee 保留完整日志
+          unset CCACHE_DIR
+          make -j"$(nproc)" V=1 2>&1 | tee build.log
           EXIT=${PIPESTATUS[0]}
           if [ "$EXIT" -ne 0 ]; then
             echo "==== BUILD FAILED (exit=$EXIT) — last 100 lines ===="
