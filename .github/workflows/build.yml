@@ -139,23 +139,39 @@ jobs:
         if: always()
         working-directory: openwrt
         run: |
+          set +e  # 防止 cp 失败中断整个 step
           mkdir -p ../artifacts
-          OUTDIR=$(find bin/targets/mediatek -mindepth 1 -maxdepth 1 -type d | head -1)
-          if [ -z "$OUTDIR" ]; then
-            echo "ERROR: no output dir under bin/targets/mediatek"
-            find bin -maxdepth 3 -type d
-          else
-            echo "==== output: $OUTDIR ===="
-            ls -lh "$OUTDIR"
+          OUTDIR=$(find bin/targets/mediatek -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)
+          echo "==== OUTDIR=[$OUTDIR] ===="
+          if [ -n "$OUTDIR" ] && [ -d "$OUTDIR" ]; then
+            echo "==== output dir contents ===="
+            ls -lh "$OUTDIR" 2>&1 | head -20
             # ubootmod 变体只有 sysupgrade.bin,直接抓全部 .bin
-            cp -av "$OUTDIR"/*.bin ../artifacts/ 2>/dev/null \
-              || cp -av "$OUTDIR"/cudy_tr3000-v1-* ../artifacts/ 2>/dev/null \
-              || cp -av "$OUTDIR"/* ../artifacts/
-            ( cd ../artifacts && sha256sum * > SHA256SUMS 2>/dev/null ) || true
+            if compgen -G "$OUTDIR/*.bin" > /dev/null; then
+              cp -av "$OUTDIR"/*.bin ../artifacts/
+            fi
+            if compgen -G "$OUTDIR/cudy_tr3000-v1-*" > /dev/null; then
+              cp -av "$OUTDIR"/cudy_tr3000-v1-* ../artifacts/
+            fi
+            ( cd ../artifacts && sha256sum * > SHA256SUMS 2>/dev/null )
+          else
+            echo "==== NO output dir — build failed early ===="
+            find bin -maxdepth 3 -type d 2>/dev/null
           fi
           # 不管成败,日志都保留以便排查
-          cp -av build.log defconfig.log ../artifacts/ 2>/dev/null || true
-          ls -lh ../artifacts/
+          echo "==== build.log preview (last 80 lines) ===="
+          if [ -f build.log ]; then
+            tail -80 build.log
+            cp -a build.log ../artifacts/
+          else
+            echo "(no build.log found)"
+          fi
+          if [ -f defconfig.log ]; then
+            cp -a defconfig.log ../artifacts/
+          fi
+          echo "==== final artifacts/ ===="
+          ls -lhR ../artifacts/
+          exit 0
 
       - name: Upload firmware (artifact)
         if: always()
