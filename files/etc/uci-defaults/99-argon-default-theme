@@ -1,0 +1,14 @@
+#!/bin/sh
+# 首次启动时:把 LuCI 默认主题从 bootstrap 改为 argon。
+# 文件名 99-* 保证在所有其它 uci-defaults 之后执行;运行完后自身被删除。
+# 文件权限要求 0755,放在 files/etc/uci-defaults/ 即可被镜像 build 进 rootfs。
+
+set -e
+
+if [ -f /etc/config/luci ]; then
+    # 修改 luci.main.mediaurlbase 为 argon
+    uci -q set luci.main.mediaurlbase='/luci-static/argon'
+    uci -q commit luci
+fi
+
+exit 0

@@ -1,0 +1,158 @@
+name: Build ImmortalWrt for Cudy TR3000
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每月 1 号 02:00 (UTC) 自动跑一次,跟进 padavanonly/immortalwrt-mt798x-6.6 提交
+    - cron: '0 2 1 * *'
+
+concurrency:
+  group: build-tr3000
+  cancel-in-progress: true
+
+env:
+  REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6
+  REPO_BRANCH: openwrt-24.10-6.6
+  CONFIG_FILE: config/tr3000.config
+  DIY_P1_SH: scripts/diy-part1.sh
+  DIY_P2_SH: scripts/diy-part2.sh
+  TZ: Asia/Shanghai
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/local/share/chromium /usr/local/share/powershell \
+            /usr/local/julia* /usr/local/lib/node_modules /usr/share/swift \
+            /opt/google-chrome /opt/msedge /opt/firefox 2>/dev/null || true
+          sudo apt-get clean
+          sudo apt-get autoremove -y
+          sudo rm -rf /var/lib/apt/lists/*
+          df -h / | tail -1
+
+      - name: Init environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git \
+            libncurses5-dev libssl-dev python3 python3-distutils \
+            rsync unzip zlib1g-dev libelf-dev file wget \
+            ccache time lib32gcc-s1 lib32stdc++6 lib32z1 \
+            xz-utils device-tree-compiler curl ca-certificates
+
+      - name: Clone source
+        run: |
+          git clone -b "$REPO_BRANCH" --single-branch --filter=blob:none \
+            "$REPO_URL" openwrt
+          git -C openwrt log -1 --oneline
+
+      - name: Setup ccache
+        run: |
+          mkdir -p "$CCACHE_DIR"
+          ccache --max-size 2G
+          ccache --set-config compression=true
+
+      - name: Cache dl/ (downloaded package sources)
+        uses: actions/cache@v4
+        with:
+          path: openwrt/dl
+          key: dl-${{ runner.os }}-${{ env.REPO_BRANCH }}
+          restore-keys: |
+            dl-${{ runner.os }}-${{ env.REPO_BRANCH }}
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ env.REPO_BRANCH }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ env.REPO_BRANCH }}
+
+      - name: Load custom config + diy-part1
+        working-directory: openwrt
+        run: |
+          cp -f "../$CONFIG_FILE" .config
+          bash "../$DIY_P1_SH"
+
+      - name: Update & install feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: diy-part2 + defconfig
+        working-directory: openwrt
+        run: |
+          bash "../$DIY_P2_SH"
+          make defconfig 2>&1 | tee defconfig.log | tail -20
+
+          echo
+          echo "==== sanity: target/device ===="
+          grep -E '^CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3000-v1-ubootmod=y' .config \
+            || (echo "ERROR: cudy_tr3000-v1-ubootmod NOT enabled"; exit 1)
+
+          echo "==== usb tethering modules ===="
+          grep -E '^CONFIG_PACKAGE_kmod-(usb|ncm|mii|nls)' .config | sort
+
+          echo "==== ttyd ===="
+          grep -E 'ttyd' .config | sort
+
+      - name: Download all sources
+        working-directory: openwrt
+        run: make -j"$(nproc)" download
+
+      - name: Build (ccache on)
+        working-directory: openwrt
+        env:
+          CCACHE_DIR: ${{ env.CCACHE_DIR }}
+        run: |
+          make -j"$(nproc)" \
+               CC="ccache gcc" CXX="ccache g++" \
+               2>&1 | tee build.log
+          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+            echo "==== BUILD FAILED — last 80 lines ===="
+            tail -80 build.log
+            exit 1
+          fi
+
+      - name: Collect firmware
+        if: always()
+        working-directory: openwrt
+        run: |
+          OUTDIR=$(find bin/targets/mediatek -mindepth 1 -maxdepth 1 -type d | head -1)
+          if [ -z "$OUTDIR" ]; then
+            echo "ERROR: no output dir under bin/targets/mediatek"
+            find bin -maxdepth 3 -type d
+            exit 1
+          fi
+          echo "==== output: $OUTDIR ===="
+          ls -lh "$OUTDIR"
+          mkdir -p ../../artifacts
+          # ubootmod 变体只有 sysupgrade.bin,直接抓全部 .bin
+          cp -av "$OUTDIR"/*.bin ../../artifacts/ 2>/dev/null \
+            || cp -av "$OUTDIR"/cudy_tr3000-v1-* ../../artifacts/ 2>/dev/null \
+            || cp -av "$OUTDIR"/* ../../artifacts/
+          ( cd ../../artifacts && sha256sum * > SHA256SUMS ) || true
+          ls -lh ../../artifacts/
+
+      - name: Upload firmware (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cudy-tr3000-firmware
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
