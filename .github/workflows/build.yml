@@ -136,17 +136,20 @@ jobs:
           if [ -z "$OUTDIR" ]; then
             echo "ERROR: no output dir under bin/targets/mediatek"
             find bin -maxdepth 3 -type d
-            exit 1
+          else
+            echo "==== output: $OUTDIR ===="
+            ls -lh "$OUTDIR"
+            mkdir -p ../artifacts
+            # ubootmod 变体只有 sysupgrade.bin,直接抓全部 .bin
+            cp -av "$OUTDIR"/*.bin ../artifacts/ 2>/dev/null \
+              || cp -av "$OUTDIR"/cudy_tr3000-v1-* ../artifacts/ 2>/dev/null \
+              || cp -av "$OUTDIR"/* ../artifacts/
+            ( cd ../artifacts && sha256sum * > SHA256SUMS 2>/dev/null ) || true
+            ls -lh ../artifacts/
           fi
-          echo "==== output: $OUTDIR ===="
-          ls -lh "$OUTDIR"
-          mkdir -p ../../artifacts
-          # ubootmod 变体只有 sysupgrade.bin,直接抓全部 .bin
-          cp -av "$OUTDIR"/*.bin ../../artifacts/ 2>/dev/null \
-            || cp -av "$OUTDIR"/cudy_tr3000-v1-* ../../artifacts/ 2>/dev/null \
-            || cp -av "$OUTDIR"/* ../../artifacts/
-          ( cd ../../artifacts && sha256sum * > SHA256SUMS ) || true
-          ls -lh ../../artifacts/
+          # 即使产物没收集到,build.log / defconfig.log 也要保留以便排查
+          mkdir -p ../artifacts
+          cp -av build.log defconfig.log ../artifacts/ 2>/dev/null || true
 
       - name: Upload firmware (artifact)
         if: always()
