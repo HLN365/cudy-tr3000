@@ -16,7 +16,7 @@ env:
   CONFIG_FILE: config/tr3000.config
   DIY_P1_SH: scripts/diy-part1.sh
   DIY_P2_SH: scripts/diy-part2.sh
-  CCACHE_DIR: /tmp/ccache-unused
+  CCACHE_DIR: /workdir/.ccache
   TZ: Asia/Shanghai
   DEBIAN_FRONTEND: noninteractive
 
@@ -51,19 +51,8 @@ jobs:
             gcc-multilib g++-multilib gettext git \
             libncurses5-dev libssl-dev python3 python3-distutils \
             rsync unzip zlib1g-dev libelf-dev file wget \
-            time lib32gcc-s1 lib32stdc++6 lib32z1 \
+            ccache time lib32gcc-s1 lib32stdc++6 lib32z1 \
             xz-utils device-tree-compiler curl ca-certificates
-          # OpenWrt build system auto-detects ccache and tries to use it.
-          # We don't want ccache here (runner doesn't support it), so we
-          # uninstall the binary so the build system falls back to plain gcc.
-          sudo apt-get remove -y --purge ccache 2>/dev/null || true
-          sudo apt-get autoremove -y 2>/dev/null || true
-          # Belt and suspenders: hide any ccache left over in /usr/local/bin too.
-          sudo mv /usr/bin/ccache /usr/bin/ccache.disabled 2>/dev/null || true
-          sudo mv /usr/local/bin/ccache /usr/local/bin/ccache.disabled 2>/dev/null || true
-          echo "ccache after disable:"
-          which ccache || echo "(none — good)"
-          hash -r
 
       - name: Clone source
         run: |
@@ -73,10 +62,16 @@ jobs:
           echo "==== tools/zstd source version ===="
           git -C openwrt log -1 --oneline -- tools/zstd 2>/dev/null || true
 
-      - name: Setup ccache (disabled)
+      - name: Setup ccache
         run: |
-          echo "ccache disabled — GitHub runner has hardcoded /workdir/.ccache in OpenWrt Makefile"
-          echo "Skip ccache to avoid permission denied errors"
+          # 必须提前 mkdir + 给权限,ccache 自己创建会失败
+          mkdir -p "$CCACHE_DIR"
+          chmod 777 "$CCACHE_DIR"
+          ccache --set-config cache_dir="$CCACHE_DIR"
+          ccache --set-config max_size=2G
+          ccache --set-config compression=true
+          ccache -z
+          ccache -p
 
       - name: Cache dl/ (downloaded package sources)
         uses: actions/cache@v4
@@ -129,11 +124,12 @@ jobs:
 
       - name: Build
         working-directory: openwrt
+        env:
+          CCACHE_DIR: ${{ env.CCACHE_DIR }}
         run: |
-          unset CCACHE_DIR
-          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-          hash -r
-          make -j"$(nproc)" V=1 2>&1 | tee build.log
+          make -j"$(nproc)" \
+               CC="ccache gcc" CXX="ccache g++" \
+               V=1 2>&1 | tee build.log
           EXIT=${PIPESTATUS[0]}
           if [ "$EXIT" -ne 0 ]; then
             echo "==== BUILD FAILED (exit=$EXIT) — last 100 lines ===="
@@ -142,6 +138,8 @@ jobs:
             echo "==== build.log size: $(wc -l < build.log) lines ===="
             exit 1
           fi
+          echo "==== ccache stats ===="
+          ccache -s
 
       - name: Collect firmware + logs
         if: always()
