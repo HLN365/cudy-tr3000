@@ -1,5 +1,8 @@
 name: Build ImmortalWrt for Cudy TR3000
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
   schedule:
@@ -154,7 +157,7 @@ jobs:
           cp -a build.log defconfig.log $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
           ls -lhR $GITHUB_WORKSPACE/artifacts/
 
-      - name: Upload firmware
+      - name: Upload firmware (artifact)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -162,3 +165,46 @@ jobs:
           path: artifacts/
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Generate release tag
+        id: tag
+        if: hashFiles('artifacts/*.bin') != ''
+        run: |
+          BUILD_TIME=$(date +"%Y%m%d-%H%M")
+          RELEASE_TAG="ImmortalWrt-${BUILD_TIME}"
+          echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+
+          cat > release_body.md << EOF
+          ## 📦 ImmortalWrt Firmware Release
+
+          **🏷️ Tag:** $RELEASE_TAG
+          **🌿 Branch:** $REPO_BRANCH
+          **📱 Device:** Cudy TR3000 v1 (ubootmod, 128M NAND)
+          **📅 Build Date:** $(date +"%Y-%m-%d %H:%M:%S")
+          **🔧 Stack:** USB tethering + ttyd + luci-app-ttyd + luci-theme-argon
+
+          ## 📥 Download
+
+          Download the firmware file from the assets below, then flash via LuCI:
+
+          1. LuCI → System → Backup / Flash Firmware → Flash image
+          2. Choose \`*cudy_tr3000-v1-ubootmod-squashfs-sysupgrade.bin\`
+          3. **Uncheck** "Keep settings" (factory .bin is a clean install)
+          4. Flash → wait ~3 min → reboot
+
+          ---
+
+          Built with ❤️ using GitHub Actions
+          EOF
+
+      - name: Upload to Release
+        if: hashFiles('artifacts/*.bin') != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          name: ${{ steps.tag.outputs.release_tag }}
+          body_path: release_body.md
+          fail_on_unmatched_files: false
+          files: |
+            artifacts/*.bin
+            artifacts/SHA256SUMS
