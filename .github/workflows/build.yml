@@ -16,6 +16,7 @@ env:
   CONFIG_FILE: config/tr3000.config
   DIY_P1_SH: scripts/diy-part1.sh
   DIY_P2_SH: scripts/diy-part2.sh
+  CCACHE_DIR: /home/runner/work/cudy-tr3000/.ccache
   TZ: Asia/Shanghai
   DEBIAN_FRONTEND: noninteractive
 
