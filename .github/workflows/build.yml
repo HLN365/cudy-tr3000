@@ -3,7 +3,6 @@ name: Build ImmortalWrt for Cudy TR3000
 on:
   workflow_dispatch:
   schedule:
-    # 每月 1 号 02:00 (UTC) 自动跑一次,跟进 padavanonly/immortalwrt-mt798x-6.6 提交
     - cron: '0 2 1 * *'
 
 concurrency:
@@ -17,6 +16,7 @@ env:
   DIY_P1_SH: scripts/diy-part1.sh
   DIY_P2_SH: scripts/diy-part2.sh
   CCACHE_DIR: /workdir/.ccache
+  CCACHE_MAXSIZE: 2G
   TZ: Asia/Shanghai
   DEBIAN_FRONTEND: noninteractive
 
@@ -31,80 +31,79 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Free disk space
-        run: |
-          df -h / | tail -1
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
-            /usr/local/share/chromium /usr/local/share/powershell \
-            /usr/local/julia* /usr/local/lib/node_modules /usr/share/swift \
-            /opt/google-chrome /opt/msedge /opt/firefox 2>/dev/null || true
-          sudo apt-get clean
-          sudo apt-get autoremove -y
-          sudo rm -rf /var/lib/apt/lists/*
-          df -h / | tail -1
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
 
       - name: Init environment
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential clang flex bison g++ gawk \
-            gcc-multilib g++-multilib gettext git \
-            libncurses5-dev libssl-dev python3 python3-distutils \
-            rsync unzip zlib1g-dev libelf-dev file wget \
-            ccache time lib32gcc-s1 lib32stdc++6 lib32z1 \
-            xz-utils device-tree-compiler curl ca-certificates
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install -y --no-install-recommends \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            build-essential bzip2 ccache clang cmake cpio curl \
+            device-tree-compiler ecj fastjar flex gawk gettext \
+            gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man \
+            intltool lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev \
+            libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+            libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev \
+            libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip \
+            p7zip-full patch pkgconf python3 python3-pip python3-ply \
+            python3-docutils python3-pyelftools qemu-utils re2c rsync scons \
+            squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip \
+            vim wget xmlto xxd zlib1g-dev zstd
+          sudo timedatectl set-timezone "$TZ"
+          # ★ 关键:创建并 chown /workdir,否则 ccache / git clone 都失败
+          sudo mkdir -p /workdir
+          sudo chown $USER:$GROUPS /workdir
 
       - name: Clone source
+        working-directory: /workdir
         run: |
-          git clone -b "$REPO_BRANCH" --single-branch --filter=blob:none \
-            "$REPO_URL" openwrt
-          git -C openwrt log -1 --oneline
-          echo "==== tools/zstd source version ===="
-          git -C openwrt log -1 --oneline -- tools/zstd 2>/dev/null || true
+          git clone $REPO_URL -b $REPO_BRANCH --single-branch --filter=blob:none openwrt
+          ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-      - name: Setup ccache
+      - name: Cache dl/ and ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /workdir/.ccache
+            /workdir/openwrt/dl
+          key: ${{ runner.os }}-openwrt-${{ env.REPO_BRANCH }}-${{ hashFiles(env.CONFIG_FILE) }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-${{ env.REPO_BRANCH }}-
+
+      - name: Configure ccache
         run: |
-          # 必须提前 mkdir + 给权限,ccache 自己创建会失败
-          mkdir -p "$CCACHE_DIR"
-          chmod 777 "$CCACHE_DIR"
-          ccache --set-config cache_dir="$CCACHE_DIR"
-          ccache --set-config max_size=2G
-          ccache --set-config compression=true
+          ccache --set-config=max_size=$CCACHE_MAXSIZE
+          ccache --set-config=cache_dir=$CCACHE_DIR
+          ccache --set-config=compression=true
           ccache -z
-          ccache -p
+          mkdir -p "$CCACHE_DIR"
 
-      - name: Cache dl/ (downloaded package sources)
-        uses: actions/cache@v4
-        with:
-          path: openwrt/dl
-          key: dl-${{ runner.os }}-${{ env.REPO_BRANCH }}
-          restore-keys: |
-            dl-${{ runner.os }}-${{ env.REPO_BRANCH }}
-
-      - name: Cache ccache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ env.REPO_BRANCH }}
-          restore-keys: |
-            ccache-${{ runner.os }}-${{ env.REPO_BRANCH }}
-
-      - name: Load custom config + diy-part1
-        working-directory: openwrt
+      - name: Load config + diy-part1
+        working-directory: /workdir/openwrt
         run: |
-          cp -f "../$CONFIG_FILE" .config
-          bash "../$DIY_P1_SH"
+          cp -f $GITHUB_WORKSPACE/$CONFIG_FILE .config
+          chmod +x $GITHUB_WORKSPACE/$DIY_P1_SH
+          $GITHUB_WORKSPACE/$DIY_P1_SH
 
       - name: Update & install feeds
-        working-directory: openwrt
+        working-directory: /workdir/openwrt
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
       - name: diy-part2 + defconfig
-        working-directory: openwrt
+        working-directory: /workdir/openwrt
         run: |
-          bash "../$DIY_P2_SH"
+          chmod +x $GITHUB_WORKSPACE/$DIY_P2_SH
+          $GITHUB_WORKSPACE/$DIY_P2_SH
           make defconfig 2>&1 | tee defconfig.log | tail -20
 
           echo
@@ -119,67 +118,43 @@ jobs:
           grep -E 'ttyd' .config | sort
 
       - name: Download all sources
-        working-directory: openwrt
+        working-directory: /workdir/openwrt
         run: make -j"$(nproc)" download
 
-      - name: Build
-        working-directory: openwrt
+      - name: Build (ccache)
+        working-directory: /workdir/openwrt
         env:
           CCACHE_DIR: ${{ env.CCACHE_DIR }}
         run: |
-          make -j"$(nproc)" \
-               CC="ccache gcc" CXX="ccache g++" \
-               V=1 2>&1 | tee build.log
-          EXIT=${PIPESTATUS[0]}
-          if [ "$EXIT" -ne 0 ]; then
-            echo "==== BUILD FAILED (exit=$EXIT) — last 100 lines ===="
-            tail -100 build.log
-            echo
-            echo "==== build.log size: $(wc -l < build.log) lines ===="
+          if ! make -j"$(nproc)" CC="ccache gcc" CXX="ccache g++"; then
+            echo "::warning::Multi-threaded build failed, retrying single-threaded"
+            make -j1 V=s 2>&1 | tee build.log
+            tail -80 build.log
             exit 1
           fi
-          echo "==== ccache stats ===="
           ccache -s
 
       - name: Collect firmware + logs
         if: always()
-        working-directory: openwrt
+        working-directory: /workdir/openwrt
         run: |
-          set +e  # 防止 cp 失败中断整个 step
-          mkdir -p ../artifacts
-          OUTDIR=$(find bin/targets/mediatek -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)
-          echo "==== OUTDIR=[$OUTDIR] ===="
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+          OUTDIR=$(find bin/targets/mediatek -mindepth 1 -maxdepth 1 -type d | head -1)
           if [ -n "$OUTDIR" ] && [ -d "$OUTDIR" ]; then
-            echo "==== output dir contents ===="
-            ls -lh "$OUTDIR" 2>&1 | head -20
-            # ubootmod 变体只有 sysupgrade.bin,直接抓全部 .bin
-            if compgen -G "$OUTDIR/*.bin" > /dev/null; then
-              cp -av "$OUTDIR"/*.bin ../artifacts/
-            fi
-            if compgen -G "$OUTDIR/cudy_tr3000-v1-*" > /dev/null; then
-              cp -av "$OUTDIR"/cudy_tr3000-v1-* ../artifacts/
-            fi
-            ( cd ../artifacts && sha256sum * > SHA256SUMS 2>/dev/null )
+            echo "==== output: $OUTDIR ===="
+            ls -lh "$OUTDIR"
+            cp -av "$OUTDIR"/*.bin $GITHUB_WORKSPACE/artifacts/ 2>/dev/null \
+              || cp -av "$OUTDIR"/cudy_tr3000-v1-* $GITHUB_WORKSPACE/artifacts/ 2>/dev/null \
+              || cp -av "$OUTDIR"/* $GITHUB_WORKSPACE/artifacts/
+            ( cd $GITHUB_WORKSPACE/artifacts && sha256sum * > SHA256SUMS 2>/dev/null ) || true
           else
-            echo "==== NO output dir — build failed early ===="
+            echo "==== NO output dir ===="
             find bin -maxdepth 3 -type d 2>/dev/null
           fi
-          # 不管成败,日志都保留以便排查
-          echo "==== build.log preview (last 80 lines) ===="
-          if [ -f build.log ]; then
-            tail -80 build.log
-            cp -a build.log ../artifacts/
-          else
-            echo "(no build.log found)"
-          fi
-          if [ -f defconfig.log ]; then
-            cp -a defconfig.log ../artifacts/
-          fi
-          echo "==== final artifacts/ ===="
-          ls -lhR ../artifacts/
-          exit 0
+          cp -a build.log defconfig.log $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
+          ls -lhR $GITHUB_WORKSPACE/artifacts/
 
-      - name: Upload firmware (artifact)
+      - name: Upload firmware
         if: always()
         uses: actions/upload-artifact@v4
         with:
