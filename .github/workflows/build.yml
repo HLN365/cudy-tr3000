@@ -16,7 +16,7 @@ env:
   CONFIG_FILE: config/tr3000.config
   DIY_P1_SH: scripts/diy-part1.sh
   DIY_P2_SH: scripts/diy-part2.sh
-  CCACHE_DIR: /home/runner/work/cudy-tr3000/.ccache
+  CCACHE_DIR: /tmp/ccache
   TZ: Asia/Shanghai
   DEBIAN_FRONTEND: noninteractive
 
@@ -64,9 +64,12 @@ jobs:
 
       - name: Setup ccache
         run: |
+          # CCACHE_DIR 是 job-level env 里的路径,提前创建好
           mkdir -p "$CCACHE_DIR"
+          chmod 777 "$CCACHE_DIR"
           ccache --max-size 2G
           ccache --set-config compression=true
+          ccache -z  # 清零统计,避免旧缓存报错
 
       - name: Cache dl/ (downloaded package sources)
         uses: actions/cache@v4
