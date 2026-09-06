@@ -59,6 +59,8 @@ jobs:
           git clone -b "$REPO_BRANCH" --single-branch --filter=blob:none \
             "$REPO_URL" openwrt
           git -C openwrt log -1 --oneline
+          echo "==== tools/zstd source version ===="
+          git -C openwrt log -1 --oneline -- tools/zstd 2>/dev/null || true
 
       - name: Setup ccache
         run: |
@@ -120,19 +122,24 @@ jobs:
         env:
           CCACHE_DIR: ${{ env.CCACHE_DIR }}
         run: |
-          make -j"$(nproc)" \
+          # V=1 显示完整命令;tee 保留完整日志以便失败时下载
+          make -j"$(nproc)" V=1 \
                CC="ccache gcc" CXX="ccache g++" \
                2>&1 | tee build.log
-          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-            echo "==== BUILD FAILED — last 80 lines ===="
-            tail -80 build.log
+          EXIT=${PIPESTATUS[0]}
+          if [ "$EXIT" -ne 0 ]; then
+            echo "==== BUILD FAILED (exit=$EXIT) — last 100 lines ===="
+            tail -100 build.log
+            echo
+            echo "==== build.log size: $(wc -l < build.log) lines ===="
             exit 1
           fi
 
-      - name: Collect firmware
+      - name: Collect firmware + logs
         if: always()
         working-directory: openwrt
         run: |
+          mkdir -p ../artifacts
           OUTDIR=$(find bin/targets/mediatek -mindepth 1 -maxdepth 1 -type d | head -1)
           if [ -z "$OUTDIR" ]; then
             echo "ERROR: no output dir under bin/targets/mediatek"
@@ -140,17 +147,15 @@ jobs:
           else
             echo "==== output: $OUTDIR ===="
             ls -lh "$OUTDIR"
-            mkdir -p ../artifacts
             # ubootmod 变体只有 sysupgrade.bin,直接抓全部 .bin
             cp -av "$OUTDIR"/*.bin ../artifacts/ 2>/dev/null \
               || cp -av "$OUTDIR"/cudy_tr3000-v1-* ../artifacts/ 2>/dev/null \
               || cp -av "$OUTDIR"/* ../artifacts/
             ( cd ../artifacts && sha256sum * > SHA256SUMS 2>/dev/null ) || true
-            ls -lh ../artifacts/
           fi
-          # 即使产物没收集到,build.log / defconfig.log 也要保留以便排查
-          mkdir -p ../artifacts
+          # 不管成败,日志都保留以便排查
           cp -av build.log defconfig.log ../artifacts/ 2>/dev/null || true
+          ls -lh ../artifacts/
 
       - name: Upload firmware (artifact)
         if: always()
@@ -158,5 +163,5 @@ jobs:
         with:
           name: cudy-tr3000-firmware
           path: artifacts/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
